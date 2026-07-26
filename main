@@ -1,0 +1,1135 @@
+import { useState, useEffect, useRef, useMemo } from "react";
+import * as XLSX from "xlsx";
+
+// ---------- Palettes ----------
+
+const CATEGORY_PALETTE = ["#34C759", "#007AFF", "#AF52DE", "#FF9500", "#8E8E93", "#FF2D55", "#30B0C7", "#5856D6", "#FF3B30", "#FFCC00"];
+const ACCENT_PRESETS = [
+  { name: "Blue", hex: "#0071E3" },
+  { name: "Green", hex: "#34C759" },
+  { name: "Orange", hex: "#FF9500" },
+  { name: "Red", hex: "#FF3B30" },
+  { name: "Purple", hex: "#AF52DE" },
+  { name: "Pink", hex: "#FF2D55" },
+  { name: "Teal", hex: "#30B0C7" },
+  { name: "Graphite", hex: "#3A3A3C" },
+];
+
+const DEFAULT_CATEGORIES = [
+  { id: "outdoors", name: "Outdoors & Views", color: "#34C759" },
+  { id: "museums", name: "Museums & Culture", color: "#007AFF" },
+  { id: "food", name: "Food & Drink", color: "#FF3B30" },
+  { id: "nightlife", name: "Nightlife & Entertainment", color: "#AF52DE" },
+  { id: "stayin", name: "Stay-In", color: "#8E8E93" },
+  { id: "classes", name: "Classes & Workshops", color: "#FF2D55" },
+  { id: "active", name: "Active", color: "#30B0C7" },
+];
+
+const seed = (name, category, cost, location, setting, weather, prep, notes) => ({
+  id: `seed-${Math.random().toString(36).slice(2, 10)}`,
+  name, category, cost, location, setting, weather, prep, notes,
+  done: false, doneDate: null,
+});
+
+const DEFAULT_ACTIVITIES = [
+  seed("Sunset at the Netherlands Carillon", "outdoors", 1, "Outdoor", "Away", "Good weather", "None", "Panoramic DC skyline view, few crowds. Right by Iwo Jima Memorial."),
+  seed("Forest walk on Roosevelt Island", "outdoors", 1, "Outdoor", "Away", "Good weather", "None", "Boardwalk trails, feels remote, 5 min from Rosslyn."),
+  seed("Sunset kayak from Key Bridge Boathouse", "outdoors", 2, "Outdoor", "Away", "Good weather", "Needs planning", "Rent a tandem kayak, roughly Apr-Oct season."),
+  seed("Sunrise hike at Great Falls Park", "outdoors", 1, "Outdoor", "Away", "Good weather", "None", "Genuinely stunning, worth the early wake-up."),
+  seed("Planet Word museum", "museums", 1, "Indoor", "Away", "Any", "None", "Interactive and playful, not stuffy. Chinatown."),
+  seed("The Phillips Collection", "museums", 2, "Indoor", "Away", "Any", "None", "Intimate mansion art collection in Dupont Circle."),
+  seed("National Building Museum", "museums", 2, "Indoor", "Away", "Any", "None", "Grand hall, check the current seasonal installation."),
+  seed("Food hall crawl at Union Market", "food", 2, "Indoor", "Away", "Any", "None", "Share small plates across 3-4 vendors instead of one meal."),
+  seed("Brewery flight at Bluejacket", "food", 2, "Either", "Away", "Any", "None", "Walk the Capitol Riverfront boardwalk after."),
+  seed("Comedy show at DC Improv", "nightlife", 2, "Indoor", "Away", "Any", "Needs planning", "Book ahead, sells out on weekends. Dupont."),
+  seed("Upscale mini golf at Puttery", "nightlife", 2, "Indoor", "Away", "Any", "None", "Playful, high energy, good with cocktails."),
+  seed("Cook a themed dinner at home", "stayin", 1, "Indoor", "Home", "Any", "Needs planning", "Pick a country, follow one real recipe from that cuisine."),
+  seed("Blind wine or cheese tasting at home", "stayin", 1, "Indoor", "Home", "Any", "Needs planning", "Cover the labels, rank favorites together."),
+  seed("One-off pottery class", "classes", 2, "Indoor", "Away", "Any", "Needs planning", "Wheel-throwing class, messy and funny, good photos."),
+  seed("Rock climbing at Movement Gym", "active", 2, "Indoor", "Away", "Any", "None", "Crystal City or Rockville locations."),
+];
+
+const COST_LABEL = ["$", "$$", "$$$", "$$$$"];
+const LOCATIONS = ["Indoor", "Outdoor", "Either"];
+const LOCATION_FILTERS = ["Indoor", "Outdoor"];
+const SETTINGS_OPT = ["Home", "Away", "Either"];
+const WEATHERS = ["Any", "Good weather", "Rain OK"];
+const PREPS = ["None", "Needs planning"];
+const COUNT_PRESETS = [1, 3, 5, 10];
+
+// ---------- Storage ----------
+
+async function loadKey(key, fallback) {
+  try {
+    const res = await window.storage.get(key, false);
+    if (res && res.value) return JSON.parse(res.value);
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+async function saveKey(key, value) {
+  try {
+    await window.storage.set(key, JSON.stringify(value), false);
+  } catch (e) {
+    console.error("storage save failed", e);
+  }
+}
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+// ---------- Import field parsing ----------
+
+const FIELD_ALIASES = {
+  name: ["activity", "name", "title"],
+  category: ["category", "type"],
+  cost: ["cost", "price"],
+  location: ["location", "indoor/outdoor", "indoor"],
+  setting: ["setting", "home/away"],
+  weather: ["weather"],
+  prep: ["prep", "preperation", "preparation"],
+  notes: ["notes", "info", "description"],
+};
+
+function guessColumn(headers, field) {
+  const aliases = FIELD_ALIASES[field] || [];
+  const lower = headers.map((h) => String(h).toLowerCase());
+  for (const alias of aliases) {
+    const idx = lower.findIndex((h) => h === alias);
+    if (idx !== -1) return headers[idx];
+  }
+  for (const alias of aliases) {
+    const idx = lower.findIndex((h) => h.includes(alias));
+    if (idx !== -1) return headers[idx];
+  }
+  return "";
+}
+
+function parseCost(raw) {
+  if (raw === null || raw === undefined || raw === "") return 1;
+  if (typeof raw === "number") return Math.min(4, Math.max(1, Math.round(raw) || 1));
+  const s = String(raw).trim();
+  const dollarCount = (s.match(/\$/g) || []).length;
+  if (dollarCount > 0) return Math.min(4, dollarCount);
+  const n = parseFloat(s);
+  if (!isNaN(n) && n > 0) return Math.min(4, Math.max(1, Math.round(n)));
+  return 1;
+}
+function parseLocation(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (s.includes("out")) return "Outdoor";
+  if (s.includes("either") || s.includes("any")) return "Either";
+  return "Indoor";
+}
+function parseSetting(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (s.includes("home")) return "Home";
+  if (s.includes("either") || s.includes("any")) return "Either";
+  return "Away";
+}
+function parseWeather(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (s.includes("rain")) return "Rain OK";
+  if (s.includes("good") || s.includes("sun") || s.includes("dry")) return "Good weather";
+  return "Any";
+}
+function parsePrep(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (!s || s.includes("none")) return "None";
+  return "Needs planning";
+}
+
+// ---------- Theme ----------
+
+function getTheme(mode, accent) {
+  if (mode === "dark") {
+    return {
+      mode, accent,
+      bg: "#000000", bgSubtle: "#1C1C1E", surface: "#1C1C1E", surfaceRaised: "#242426",
+      border: "#38383A", text: "#F5F5F7", textSecondary: "#98989D", textTertiary: "#68686D",
+      shadow: "0 1px 2px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.35)",
+      overlay: "rgba(0,0,0,0.6)",
+    };
+  }
+  return {
+    mode, accent,
+    bg: "#FFFFFF", bgSubtle: "#F5F5F7", surface: "#FFFFFF", surfaceRaised: "#FFFFFF",
+    border: "#E5E5EA", text: "#1D1D1F", textSecondary: "#6E6E73", textTertiary: "#AEAEB2",
+    shadow: "0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.08)",
+    overlay: "rgba(0,0,0,0.35)",
+  };
+}
+
+// ---------- Component ----------
+
+export default function DateIdeaPicker() {
+  const [loaded, setLoaded] = useState(false);
+  const [activities, setActivities] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [theme, setTheme] = useState("light");
+  const [accent, setAccent] = useState(ACCENT_PRESETS[0].hex);
+  const [page, setPage] = useState("picker"); // picker | manage | stats
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // filters
+  const [catFilter, setCatFilter] = useState([]);
+  const [costFilter, setCostFilter] = useState([]);
+  const [locFilter, setLocFilter] = useState(null);
+  const [advOpen, setAdvOpen] = useState(false);
+  const [weatherFilter, setWeatherFilter] = useState(null);
+  const [settingFilter, setSettingFilter] = useState(null);
+  const [prepFilter, setPrepFilter] = useState(null);
+  const [includeDone, setIncludeDone] = useState(false);
+
+  // count controls (shared state across the three UI variants)
+  const [drawCount, setDrawCount] = useState(1);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customVal, setCustomVal] = useState("1");
+
+  // results
+  const [shuffling, setShuffling] = useState(false);
+  const [results, setResults] = useState(null); // array
+  const [flip, setFlip] = useState(false);
+  const [emptyNotice, setEmptyNotice] = useState(false);
+
+  // manage page
+  const [search, setSearch] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [showCatManager, setShowCatManager] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatColor, setNewCatColor] = useState(CATEGORY_PALETTE[0]);
+
+  // import
+  const [importOpen, setImportOpen] = useState(false);
+  const [importStep, setImportStep] = useState("upload"); // upload | map
+  const [importRows, setImportRows] = useState([]);
+  const [importHeaders, setImportHeaders] = useState([]);
+  const [fieldMap, setFieldMap] = useState({});
+  const [skipDup, setSkipDup] = useState(true);
+  const [importError, setImportError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const blankForm = () => ({
+    name: "", category: categories[0]?.id || "", cost: 1, location: "Indoor",
+    setting: "Away", weather: "Any", prep: "None", notes: "",
+  });
+  const [form, setForm] = useState(blankForm());
+
+  const initialized = useRef(false);
+
+  useEffect(() => {
+    if (initialized.current) return;
+    initialized.current = true;
+    (async () => {
+      const acts = await loadKey("dc-date:activities", null);
+      const cats = await loadKey("dc-date:categories", null);
+      const settings = await loadKey("dc-date:settings", null);
+      const finalCats = cats && cats.length ? cats : DEFAULT_CATEGORIES;
+      const finalActs = acts && acts.length ? acts : DEFAULT_ACTIVITIES;
+      setCategories(finalCats);
+      setActivities(finalActs);
+      if (settings) {
+        setTheme(settings.theme || "light");
+        setAccent(settings.accent || ACCENT_PRESETS[0].hex);
+      }
+      if (!cats) await saveKey("dc-date:categories", finalCats);
+      if (!acts) await saveKey("dc-date:activities", finalActs);
+      setLoaded(true);
+    })();
+  }, []);
+
+  const persistActivities = async (next) => {
+    setActivities(next);
+    await saveKey("dc-date:activities", next);
+  };
+  const persistCategories = async (next) => {
+    setCategories(next);
+    await saveKey("dc-date:categories", next);
+  };
+  const persistSettings = async (nextTheme, nextAccent) => {
+    await saveKey("dc-date:settings", { theme: nextTheme, accent: nextAccent });
+  };
+
+  const T = useMemo(() => getTheme(theme, accent), [theme, accent]);
+  const S = useMemo(() => mkStyles(T), [T]);
+
+  const catById = (id) => categories.find((c) => c.id === id);
+
+  function matches(a) {
+    if (!includeDone && a.done) return false;
+    if (catFilter.length && !catFilter.includes(a.category)) return false;
+    if (costFilter.length && !costFilter.includes(a.cost)) return false;
+    if (locFilter && a.location !== locFilter && a.location !== "Either") return false;
+    if (weatherFilter && a.weather !== weatherFilter && a.weather !== "Any") return false;
+    if (settingFilter && a.setting !== settingFilter && a.setting !== "Either") return false;
+    if (prepFilter && a.prep !== prepFilter) return false;
+    return true;
+  }
+
+  function toggleMulti(arr, setArr, val) {
+    setArr(arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val]);
+  }
+  function toggleSingle(cur, setCur, val) {
+    setCur(cur === val ? null : val);
+  }
+
+  function setCount(n) {
+    if (n === "all") {
+      setDrawCount("all");
+      return;
+    }
+    const clamped = Math.max(1, Math.min(50, n || 1));
+    setDrawCount(clamped);
+  }
+
+  function draw() {
+    const pool = [...activities.filter(matches)];
+    if (!pool.length) {
+      setEmptyNotice(true);
+      setResults(null);
+      return;
+    }
+    setEmptyNotice(false);
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const limit = drawCount === "all" ? pool.length : drawCount;
+    const picks = pool.slice(0, limit);
+
+    setShuffling(true);
+    setFlip(false);
+    setResults(null);
+    setTimeout(() => {
+      setResults(picks);
+      setShuffling(false);
+      // branch on the actual number of picks, not the requested count —
+      // a request for several that resolves to one match should still flip-reveal
+      if (picks.length === 1) setTimeout(() => setFlip(true), 30);
+    }, 500);
+  }
+
+  function toggleDone(id) {
+    const next = activities.map((a) =>
+      a.id === id ? { ...a, done: !a.done, doneDate: !a.done ? new Date().toISOString().slice(0, 10) : null } : a
+    );
+    persistActivities(next);
+  }
+  function deleteActivity(id) {
+    persistActivities(activities.filter((a) => a.id !== id));
+    if (results) setResults(results.filter((a) => a.id !== id));
+  }
+  function openEdit(a) {
+    setEditingId(a.id);
+    setForm({ name: a.name, category: a.category, cost: a.cost, location: a.location, setting: a.setting, weather: a.weather, prep: a.prep, notes: a.notes || "" });
+    setShowForm(true);
+  }
+  function openAdd() {
+    setEditingId(null);
+    setForm(blankForm());
+    setShowForm(true);
+  }
+  function submitForm(e) {
+    e.preventDefault();
+    if (!form.name.trim() || !form.category) return;
+    if (editingId) {
+      persistActivities(activities.map((a) => (a.id === editingId ? { ...a, ...form } : a)));
+    } else {
+      persistActivities([...activities, { id: uid(), ...form, done: false, doneDate: null }]);
+    }
+    setShowForm(false);
+  }
+  function addCategory() {
+    if (!newCatName.trim()) return;
+    persistCategories([...categories, { id: uid(), name: newCatName.trim(), color: newCatColor }]);
+    setNewCatName("");
+  }
+  function removeCategory(id) {
+    if (activities.some((a) => a.category === id)) return;
+    persistCategories(categories.filter((c) => c.id !== id));
+  }
+
+  // ---------- Import ----------
+
+  function handleFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportError("");
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(evt.target.result, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+        if (!rows.length) {
+          setImportError("That sheet looks empty.");
+          return;
+        }
+        const headers = Object.keys(rows[0]);
+        const guessed = {};
+        Object.keys(FIELD_ALIASES).forEach((f) => (guessed[f] = guessColumn(headers, f)));
+        setImportHeaders(headers);
+        setImportRows(rows);
+        setFieldMap(guessed);
+        setImportStep("map");
+      } catch (err) {
+        setImportError("Couldn't read that file. Try an .xlsx or .csv export.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function transformRow(row) {
+    const nameVal = fieldMap.name ? row[fieldMap.name] : "";
+    const catRaw = fieldMap.category ? row[fieldMap.category] : "";
+    return {
+      name: String(nameVal || "").trim(),
+      categoryRaw: String(catRaw || "").trim(),
+      cost: parseCost(fieldMap.cost ? row[fieldMap.cost] : ""),
+      location: parseLocation(fieldMap.location ? row[fieldMap.location] : ""),
+      setting: parseSetting(fieldMap.setting ? row[fieldMap.setting] : ""),
+      weather: parseWeather(fieldMap.weather ? row[fieldMap.weather] : ""),
+      prep: parsePrep(fieldMap.prep ? row[fieldMap.prep] : ""),
+      notes: fieldMap.notes ? String(row[fieldMap.notes] || "") : "",
+    };
+  }
+
+  function confirmImport() {
+    let cats = [...categories];
+    let colorCursor = cats.length;
+    const existingNames = new Set(activities.map((a) => a.name.trim().toLowerCase()));
+    const newActs = [];
+
+    importRows.forEach((row) => {
+      const t = transformRow(row);
+      if (!t.name) return;
+      if (skipDup && existingNames.has(t.name.toLowerCase())) return;
+
+      let cat = t.categoryRaw
+        ? cats.find((c) => c.name.toLowerCase() === t.categoryRaw.toLowerCase())
+        : null;
+      if (!cat && t.categoryRaw) {
+        cat = { id: uid(), name: t.categoryRaw, color: CATEGORY_PALETTE[colorCursor % CATEGORY_PALETTE.length] };
+        colorCursor++;
+        cats.push(cat);
+      }
+      if (!cat) cat = cats[0];
+
+      newActs.push({
+        id: uid(), name: t.name, category: cat.id, cost: t.cost, location: t.location,
+        setting: t.setting, weather: t.weather, prep: t.prep, notes: t.notes,
+        done: false, doneDate: null,
+      });
+      existingNames.add(t.name.toLowerCase());
+    });
+
+    persistCategories(cats);
+    persistActivities([...activities, ...newActs]);
+    setImportOpen(false);
+    setImportStep("upload");
+    setImportRows([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  const doneCount = activities.filter((a) => a.done).length;
+  const filteredList = activities.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()));
+
+  function changeTheme(m) {
+    setTheme(m);
+    persistSettings(m, accent);
+  }
+  function changeAccent(hex) {
+    setAccent(hex);
+    persistSettings(theme, hex);
+  }
+
+  if (!loaded) {
+    return (
+      <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", height: 300 }}>
+        <div style={{ color: S.T.textSecondary, fontSize: 14 }}>Loading…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.page}>
+      <style>{`
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes blink { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+        .dc-in { animation: fadeUp .3s ease both; }
+        .dc-blink { animation: blink 1.1s infinite ease-in-out; }
+        .dc-flip-outer { perspective: 1400px; }
+        .dc-flip-inner { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .5s cubic-bezier(.4,.15,.2,1); }
+        .dc-flip-inner.flipped { transform: rotateY(180deg); }
+        .dc-flip-face { position: absolute; inset: 0; backface-visibility: hidden; }
+        .dc-flip-back { transform: rotateY(180deg); }
+        .dc-chip { cursor: pointer; transition: filter .12s ease, transform .12s ease; }
+        .dc-chip:active { transform: scale(0.97); }
+        .dc-btn { cursor: pointer; transition: opacity .12s ease, transform .12s ease; }
+        .dc-btn:hover { opacity: 0.88; }
+        .dc-btn:active { transform: scale(0.98); }
+        .dc-row:hover { background: ${T.bgSubtle}; }
+        .dc-tab { cursor: pointer; }
+        input, select, textarea, button { font-family: inherit; }
+        ::placeholder { color: ${T.textTertiary}; }
+        table { border-collapse: collapse; width: 100%; }
+      `}</style>
+
+      {/* Top bar */}
+      <div style={S.topbar}>
+        <div style={S.tabs}>
+          {[["picker", "Picker"], ["manage", "Manage"], ["stats", "Stats & History"]].map(([id, label]) => (
+            <div key={id} className="dc-tab" onClick={() => setPage(id)} style={{ ...S.tab, ...(page === id ? S.tabActive : {}) }}>
+              {label}
+            </div>
+          ))}
+        </div>
+        <div style={{ position: "relative" }}>
+          <button className="dc-btn" style={S.gearBtn} onClick={() => setSettingsOpen(!settingsOpen)} aria-label="Settings">⚙</button>
+          {settingsOpen && (
+            <div style={S.settingsPop} className="dc-in">
+              <div style={S.filterLabel}>Appearance</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                {["light", "dark"].map((m) => (
+                  <div key={m} className="dc-chip" onClick={() => changeTheme(m)}
+                    style={{ ...S.segItem, background: theme === m ? T.text : "transparent", color: theme === m ? T.bg : T.text, borderColor: T.border, flex: 1, textAlign: "center" }}>
+                    {m === "light" ? "Light" : "Dark"}
+                  </div>
+                ))}
+              </div>
+              <div style={S.filterLabel}>Accent color</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                {ACCENT_PRESETS.map((c) => (
+                  <span key={c.hex} onClick={() => changeAccent(c.hex)} title={c.name}
+                    style={{ width: 24, height: 24, borderRadius: "50%", background: c.hex, cursor: "pointer", display: "inline-block", border: accent === c.hex ? `2px solid ${T.text}` : "2px solid transparent", boxShadow: accent === c.hex ? `0 0 0 2px ${T.bg}` : "none" }} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {page === "picker" && (
+        <PickerPage
+          T={T} S={S}
+          categories={categories} catFilter={catFilter} setCatFilter={setCatFilter}
+          costFilter={costFilter} setCostFilter={setCostFilter}
+          locFilter={locFilter} setLocFilter={setLocFilter}
+          advOpen={advOpen} setAdvOpen={setAdvOpen}
+          weatherFilter={weatherFilter} setWeatherFilter={setWeatherFilter}
+          settingFilter={settingFilter} setSettingFilter={setSettingFilter}
+          prepFilter={prepFilter} setPrepFilter={setPrepFilter}
+          includeDone={includeDone} setIncludeDone={setIncludeDone}
+          toggleMulti={toggleMulti} toggleSingle={toggleSingle}
+          drawCount={drawCount} setCount={setCount}
+          customOpen={customOpen} setCustomOpen={setCustomOpen}
+          customVal={customVal} setCustomVal={setCustomVal}
+          draw={draw} shuffling={shuffling} results={results} flip={flip}
+          emptyNotice={emptyNotice} catById={catById} toggleDone={toggleDone}
+        />
+      )}
+
+      {page === "manage" && (
+        <ManagePage
+          T={T} S={S}
+          activities={filteredList} allCount={activities.length}
+          search={search} setSearch={setSearch}
+          categories={categories} catById={catById}
+          openAdd={openAdd} openEdit={openEdit} deleteActivity={deleteActivity} toggleDone={toggleDone}
+          showCatManager={showCatManager} setShowCatManager={setShowCatManager}
+          newCatName={newCatName} setNewCatName={setNewCatName}
+          newCatColor={newCatColor} setNewCatColor={setNewCatColor}
+          addCategory={addCategory} removeCategory={removeCategory}
+          openImport={() => { setImportOpen(true); setImportStep("upload"); setImportError(""); }}
+        />
+      )}
+
+      {page === "stats" && (
+        <StatsPage T={T} S={S} activities={activities} categories={categories} catById={catById} toggleDone={toggleDone} doneCount={doneCount} />
+      )}
+
+      {/* Add/Edit modal */}
+      {showForm && (
+        <div style={S.overlay} onClick={() => setShowForm(false)}>
+          <form style={S.formBox} onClick={(e) => e.stopPropagation()} onSubmit={submitForm}>
+            <div style={S.formTitle}>{editingId ? "Edit activity" : "Add activity"}</div>
+            <label style={S.formLabel}>Name</label>
+            <input required style={S.input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Sunset at Gravelly Point" />
+            <label style={S.formLabel}>Category</label>
+            <select style={S.input} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={S.formLabel}>Cost</label>
+                <select style={S.input} value={form.cost} onChange={(e) => setForm({ ...form, cost: Number(e.target.value) })}>
+                  {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{COST_LABEL[n - 1]}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={S.formLabel}>Location</label>
+                <select style={S.input} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}>
+                  {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={S.formLabel}>Home / away</label>
+                <select style={S.input} value={form.setting} onChange={(e) => setForm({ ...form, setting: e.target.value })}>
+                  {SETTINGS_OPT.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={S.formLabel}>Weather</label>
+                <select style={S.input} value={form.weather} onChange={(e) => setForm({ ...form, weather: e.target.value })}>
+                  {WEATHERS.map((w) => <option key={w} value={w}>{w}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={S.formLabel}>Prep</label>
+                <select style={S.input} value={form.prep} onChange={(e) => setForm({ ...form, prep: e.target.value })}>
+                  {PREPS.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+            <label style={S.formLabel}>Notes (optional)</label>
+            <textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            <div style={{ display: "flex", gap: 10, marginTop: 14, justifyContent: "flex-end" }}>
+              <button type="button" className="dc-btn" style={S.btnGhost} onClick={() => setShowForm(false)}>Cancel</button>
+              <button type="submit" className="dc-btn" style={S.btnPrimary}>{editingId ? "Save changes" : "Add activity"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Import modal */}
+      {importOpen && (
+        <div style={S.overlay} onClick={() => setImportOpen(false)}>
+          <div style={{ ...S.formBox, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div style={S.formTitle}>Import from Excel</div>
+            {importStep === "upload" && (
+              <>
+                <div style={{ color: T.textSecondary, fontSize: 13.5, marginBottom: 16, lineHeight: 1.5 }}>
+                  Upload an .xlsx, .xls, or .csv file. The first row should be column headers — I'll try to match them automatically, and you can fix anything that's off before importing.
+                </div>
+                <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFileSelect} style={{ marginBottom: 10 }} />
+                {importError && <div style={{ color: "#FF3B30", fontSize: 13 }}>{importError}</div>}
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+                  <button className="dc-btn" style={S.btnGhost} onClick={() => setImportOpen(false)}>Cancel</button>
+                </div>
+              </>
+            )}
+            {importStep === "map" && (
+              <>
+                <div style={{ color: T.textSecondary, fontSize: 13, marginBottom: 12 }}>
+                  {importRows.length} rows found. Match your columns to each field (unmatched fields will use a sensible default).
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+                  {Object.keys(FIELD_ALIASES).map((f) => (
+                    <div key={f}>
+                      <label style={S.formLabel}>{f === "name" ? "Activity name" : f.charAt(0).toUpperCase() + f.slice(1)}</label>
+                      <select style={S.input} value={fieldMap[f] || ""} onChange={(e) => setFieldMap({ ...fieldMap, [f]: e.target.value })}>
+                        <option value="">— none / skip —</option>
+                        {importHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.text, marginBottom: 12 }}>
+                  <input type="checkbox" checked={skipDup} onChange={(e) => setSkipDup(e.target.checked)} />
+                  Skip rows whose name matches an activity you already have
+                </label>
+                <div style={{ ...S.tableWrap, maxHeight: 160, marginBottom: 14 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Cost</th><th style={S.th}>Location</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importRows.slice(0, 4).map((row, i) => {
+                        const t = transformRow(row);
+                        return (
+                          <tr key={i}>
+                            <td style={S.td}>{t.name || "—"}</td>
+                            <td style={S.td}>{t.categoryRaw || "—"}</td>
+                            <td style={S.td}>{COST_LABEL[t.cost - 1]}</td>
+                            <td style={S.td}>{t.location}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <button className="dc-btn" style={S.btnGhost} onClick={() => setImportOpen(false)}>Cancel</button>
+                  <button className="dc-btn" style={S.btnPrimary} onClick={confirmImport}>Import {importRows.length} rows</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Picker Page ----------
+
+function PickerPage(props) {
+  const {
+    T, S, categories, catFilter, setCatFilter, costFilter, setCostFilter, locFilter, setLocFilter,
+    advOpen, setAdvOpen, weatherFilter, setWeatherFilter, settingFilter, setSettingFilter,
+    prepFilter, setPrepFilter, includeDone, setIncludeDone, toggleMulti, toggleSingle,
+    drawCount, setCount, customOpen, setCustomOpen, customVal, setCustomVal,
+    draw, shuffling, results, flip, emptyNotice, catById, toggleDone,
+  } = props;
+
+  return (
+    <div style={S.pageInner}>
+      <div style={S.h1}>Pick something to do</div>
+      <div style={S.subtext}>Filter by what you're in the mood for, then let it choose.</div>
+
+      <div style={S.panel}>
+        <div style={S.filterLabel}>Category</div>
+        <div style={S.chipRow}>
+          {categories.map((c) => {
+            const active = catFilter.includes(c.id);
+            return (
+              <div key={c.id} className="dc-chip" onClick={() => toggleMulti(catFilter, setCatFilter, c.id)}
+                style={{ ...S.chip, borderColor: c.color, background: active ? c.color : "transparent", color: active ? "#FFFFFF" : T.text }}>
+                <span style={{ ...S.dotSm, background: active ? "#FFFFFF" : c.color }} />
+                {c.name}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={S.filterRow2}>
+          <div>
+            <div style={S.filterLabel}>Cost</div>
+            <div style={S.chipRow}>
+              {[1, 2, 3, 4].map((n) => {
+                const active = costFilter.includes(n);
+                return (
+                  <div key={n} className="dc-chip" onClick={() => toggleMulti(costFilter, setCostFilter, n)}
+                    style={{ ...S.chip, borderColor: T.accent, background: active ? T.accent : "transparent", color: active ? "#FFFFFF" : T.text }}>
+                    {COST_LABEL[n - 1]}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div style={S.filterLabel}>Where</div>
+            <div style={S.chipRow}>
+              {LOCATION_FILTERS.map((l) => {
+                const active = locFilter === l;
+                return (
+                  <div key={l} className="dc-chip" onClick={() => toggleSingle(locFilter, setLocFilter, l)}
+                    style={{ ...S.chip, borderColor: T.accent, background: active ? T.accent : "transparent", color: active ? "#FFFFFF" : T.text }}>
+                    {l}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <button style={S.advToggle} onClick={() => setAdvOpen(!advOpen)}>
+          {advOpen ? "Hide" : "Show"} advanced filters
+        </button>
+
+        {advOpen && (
+          <div style={S.advBox} className="dc-in">
+            <div>
+              <div style={S.filterLabel}>Weather</div>
+              <div style={S.chipRow}>
+                {WEATHERS.map((w) => {
+                  const active = weatherFilter === w;
+                  return (
+                    <div key={w} className="dc-chip" onClick={() => toggleSingle(weatherFilter, setWeatherFilter, w)}
+                      style={{ ...S.chipSm, borderColor: T.textSecondary, background: active ? T.text : "transparent", color: active ? T.bg : T.text }}>
+                      {w}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <div style={S.filterLabel}>Home or away</div>
+              <div style={S.chipRow}>
+                {SETTINGS_OPT.map((s) => {
+                  const active = settingFilter === s;
+                  return (
+                    <div key={s} className="dc-chip" onClick={() => toggleSingle(settingFilter, setSettingFilter, s)}
+                      style={{ ...S.chipSm, borderColor: T.textSecondary, background: active ? T.text : "transparent", color: active ? T.bg : T.text }}>
+                      {s}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <div style={S.filterLabel}>Prep needed</div>
+              <div style={S.chipRow}>
+                {PREPS.map((p) => {
+                  const active = prepFilter === p;
+                  return (
+                    <div key={p} className="dc-chip" onClick={() => toggleSingle(prepFilter, setPrepFilter, p)}
+                      style={{ ...S.chipSm, borderColor: T.textSecondary, background: active ? T.text : "transparent", color: active ? T.bg : T.text }}>
+                      {p}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, color: T.text, fontSize: 13, marginTop: 4 }}>
+              <input type="checkbox" checked={includeDone} onChange={(e) => setIncludeDone(e.target.checked)} />
+              Include activities already marked done
+            </label>
+          </div>
+        )}
+      </div>
+
+      {/* Count controls — three variants, all wired to the same value */}
+      <div style={S.panel}>
+        <div style={S.filterLabel}>How many activities?</div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={S.chipRow}>
+            {COUNT_PRESETS.map((n) => (
+              <div key={n} className="dc-chip" onClick={() => setCount(n)}
+                style={{ ...S.segItem, borderColor: T.accent, background: drawCount === n ? T.accent : "transparent", color: drawCount === n ? "#FFFFFF" : T.text }}>
+                {n}
+              </div>
+            ))}
+            <div className="dc-chip" onClick={() => setCount("all")}
+              style={{ ...S.segItem, borderColor: T.accent, background: drawCount === "all" ? T.accent : "transparent", color: drawCount === "all" ? "#FFFFFF" : T.text }}>
+              All
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
+          <div>
+            <div style={S.miniCaption}>Dropdown</div>
+            <select
+              style={{ ...S.input, width: 150, margin: 0 }}
+              value={COUNT_PRESETS.includes(drawCount) ? drawCount : drawCount === "all" ? "all" : "custom"}
+              onChange={(e) => {
+                if (e.target.value === "custom") { setCustomOpen(true); }
+                else if (e.target.value === "all") { setCount("all"); setCustomOpen(false); }
+                else { setCount(Number(e.target.value)); setCustomOpen(false); }
+              }}
+            >
+              {COUNT_PRESETS.map((n) => <option key={n} value={n}>{n} {n === 1 ? "activity" : "activities"}</option>)}
+              <option value="all">All matches</option>
+              <option value="custom">Custom…</option>
+            </select>
+            {customOpen && (
+              <input type="number" min={1} max={50} value={customVal}
+                onChange={(e) => { setCustomVal(e.target.value); setCount(parseInt(e.target.value, 10)); }}
+                placeholder="Number"
+                style={{ ...S.input, width: 90, marginTop: 8 }} />
+            )}
+          </div>
+
+          <div>
+            <div style={S.miniCaption}>Stepper</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 0, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", width: "fit-content" }}>
+              <button className="dc-btn" style={S.stepBtn} onClick={() => setCount(drawCount === "all" ? 9 : drawCount - 1)}>−</button>
+              <div style={{ padding: "0 16px", fontSize: 14, fontWeight: 600, color: T.text, minWidth: 30, textAlign: "center" }}>{drawCount === "all" ? "All" : drawCount}</div>
+              <button className="dc-btn" style={S.stepBtn} onClick={() => setCount(drawCount === "all" ? "all" : drawCount + 1)}>+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+        <button className="dc-btn" style={S.btnPrimaryLg} onClick={draw}>Surprise me</button>
+      </div>
+
+      {emptyNotice && <div style={{ ...S.notice }} className="dc-in">No activities match those filters — try loosening one.</div>}
+
+      {shuffling && (
+        <div style={S.shuffleBox}>
+          <span className="dc-blink" style={{ ...S.dotBig, background: T.textTertiary, animationDelay: "0s" }} />
+          <span className="dc-blink" style={{ ...S.dotBig, background: T.textTertiary, animationDelay: ".2s" }} />
+          <span className="dc-blink" style={{ ...S.dotBig, background: T.textTertiary, animationDelay: ".4s" }} />
+        </div>
+      )}
+
+      {results && results.length === 1 && !shuffling && (
+        <div className="dc-flip-outer" style={S.flipOuter}>
+          <div className={`dc-flip-inner ${flip ? "flipped" : ""}`}>
+            <div className="dc-flip-face" style={{ ...S.resultCard, background: T.bgSubtle }} />
+            <div className="dc-flip-face dc-flip-back" style={S.resultCard}>
+              <div style={{ ...S.stripe, background: catById(results[0].category)?.color || T.accent }} />
+              <div style={{ padding: "22px 24px" }}>
+                <div style={S.eyebrowSm}>{catById(results[0].category)?.name || "Uncategorized"}</div>
+                <div style={S.cardTitle}>{results[0].name}</div>
+                <div style={S.cardMeta}>
+                  <span>{COST_LABEL[results[0].cost - 1]}</span><span>·</span>
+                  <span>{results[0].location}</span><span>·</span>
+                  <span>{results[0].setting}</span><span>·</span>
+                  <span>{results[0].weather}</span>
+                </div>
+                {results[0].notes && <div style={S.cardNotes}>{results[0].notes}</div>}
+                <button className="dc-btn" style={{ ...S.doneBtnCard, ...(results[0].done ? S.doneBtnCardActive : {}) }} onClick={() => toggleDone(results[0].id)}>
+                  {results[0].done ? "Done ✓" : "Mark as done"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {results && results.length > 1 && (
+        <div style={S.grid}>
+          {results.map((a, i) => (
+            <div key={a.id} className="dc-in" style={{ ...S.miniCard, animationDelay: `${i * 0.03}s` }}>
+              <div style={{ ...S.stripeSm, background: catById(a.category)?.color || T.accent }} />
+              <div style={{ padding: "13px 15px" }}>
+                <div style={S.eyebrowSm}>{catById(a.category)?.name}</div>
+                <div style={S.miniTitle}>{a.name}</div>
+                <div style={S.miniMeta}>{COST_LABEL[a.cost - 1]} · {a.location} · {a.setting}</div>
+                <button className="dc-btn" style={{ ...S.doneBtnMini, ...(a.done ? S.doneBtnCardActive : {}) }} onClick={() => toggleDone(a.id)}>
+                  {a.done ? "✓" : "Mark done"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Manage Page ----------
+
+function ManagePage(props) {
+  const {
+    T, S, activities, allCount, search, setSearch, categories, catById,
+    openAdd, openEdit, deleteActivity, toggleDone,
+    showCatManager, setShowCatManager, newCatName, setNewCatName, newCatColor, setNewCatColor,
+    addCategory, removeCategory, openImport,
+  } = props;
+
+  return (
+    <div style={S.pageInner}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <div>
+          <div style={S.h1}>Manage activities</div>
+          <div style={S.subtext}>{allCount} total</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="dc-btn" style={S.btnGhost} onClick={openImport}>Import from Excel</button>
+          <button className="dc-btn" style={S.btnPrimary} onClick={openAdd}>+ Add activity</button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, margin: "18px 0 14px", flexWrap: "wrap", alignItems: "center" }}>
+        <input placeholder="Search activities…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...S.input, maxWidth: 260 }} />
+        <button className="dc-btn" style={S.linkBtn} onClick={() => setShowCatManager(!showCatManager)}>
+          {showCatManager ? "Hide" : "Manage"} categories
+        </button>
+      </div>
+
+      {showCatManager && (
+        <div style={S.catManager} className="dc-in">
+          {categories.map((c) => (
+            <div key={c.id} style={S.catRow}>
+              <span style={{ ...S.dotSm, background: c.color }} />
+              <span style={{ flex: 1, color: T.text, fontSize: 13 }}>{c.name}</span>
+              <button className="dc-btn" style={S.xBtn} onClick={() => removeCategory(c.id)} title="Remove (only if unused)">✕</button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input placeholder="New category name" value={newCatName} onChange={(e) => setNewCatName(e.target.value)} style={{ ...S.input, flex: 1, minWidth: 140, margin: 0 }} />
+            <div style={{ display: "flex", gap: 4 }}>
+              {CATEGORY_PALETTE.map((sw) => (
+                <span key={sw} onClick={() => setNewCatColor(sw)} style={{ width: 18, height: 18, borderRadius: "50%", background: sw, cursor: "pointer", border: newCatColor === sw ? `2px solid ${T.text}` : "2px solid transparent" }} />
+              ))}
+            </div>
+            <button className="dc-btn" style={S.btnGhost} onClick={addCategory}>Add</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.tableWrap}>
+        <table>
+          <thead>
+            <tr>
+              <th style={S.th}></th>
+              <th style={S.th}>Name</th>
+              <th style={S.th}>Category</th>
+              <th style={S.th}>Cost</th>
+              <th style={S.th}>Location</th>
+              <th style={S.th}>Setting</th>
+              <th style={S.th}>Weather</th>
+              <th style={S.th}>Prep</th>
+              <th style={S.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {activities.map((a) => (
+              <tr key={a.id} className="dc-row">
+                <td style={S.td}><input type="checkbox" checked={a.done} onChange={() => toggleDone(a.id)} /></td>
+                <td style={{ ...S.td, fontWeight: 500, textDecoration: a.done ? "line-through" : "none", opacity: a.done ? 0.5 : 1 }}>{a.name}</td>
+                <td style={S.td}>
+                  <span style={S.pill}>
+                    <span style={{ ...S.dotSm, background: catById(a.category)?.color || "#999" }} />
+                    {catById(a.category)?.name || "—"}
+                  </span>
+                </td>
+                <td style={S.td}>{COST_LABEL[a.cost - 1]}</td>
+                <td style={S.td}>{a.location}</td>
+                <td style={S.td}>{a.setting}</td>
+                <td style={S.td}>{a.weather}</td>
+                <td style={S.td}>{a.prep}</td>
+                <td style={{ ...S.td, whiteSpace: "nowrap" }}>
+                  <button className="dc-btn" style={S.xBtn} onClick={() => openEdit(a)}>Edit</button>
+                  <button className="dc-btn" style={S.xBtn} onClick={() => deleteActivity(a.id)}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!activities.length && <div style={{ color: T.textSecondary, fontSize: 13, padding: 16 }}>No activities match your search.</div>}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Stats Page ----------
+
+function StatsPage({ T, S, activities, categories, catById, toggleDone, doneCount }) {
+  const total = activities.length;
+  const remaining = total - doneCount;
+  const doneList = activities.filter((a) => a.done).sort((a, b) => (b.doneDate || "").localeCompare(a.doneDate || ""));
+
+  const breakdown = categories.map((c) => {
+    const acts = activities.filter((a) => a.category === c.id);
+    const done = acts.filter((a) => a.done).length;
+    return { ...c, total: acts.length, done };
+  }).filter((c) => c.total > 0);
+
+  return (
+    <div style={S.pageInner}>
+      <div style={S.h1}>Stats &amp; history</div>
+      <div style={S.subtext}>Track what you've already done.</div>
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "18px 0" }}>
+        {[["Total activities", total], ["Done", doneCount], ["Remaining", remaining], ["Categories", categories.length]].map(([label, val]) => (
+          <div key={label} style={S.statCard}>
+            <div style={{ fontSize: 26, fontWeight: 700, color: T.text }}>{val}</div>
+            <div style={{ fontSize: 12.5, color: T.textSecondary, marginTop: 2 }}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={S.panel}>
+        <div style={S.filterLabel}>By category</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
+          {breakdown.map((c) => (
+            <div key={c.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.text, marginBottom: 4 }}>
+                <span>{c.name}</span>
+                <span style={{ color: T.textSecondary }}>{c.done}/{c.total}</span>
+              </div>
+              <div style={{ height: 6, borderRadius: 3, background: T.bgSubtle, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${c.total ? (c.done / c.total) * 100 : 0}%`, background: c.color, borderRadius: 3 }} />
+              </div>
+            </div>
+          ))}
+          {!breakdown.length && <div style={{ color: T.textSecondary, fontSize: 13 }}>No activities yet.</div>}
+        </div>
+      </div>
+
+      <div style={S.panel}>
+        <div style={S.filterLabel}>History</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 8 }}>
+          {doneList.map((a) => (
+            <div key={a.id} className="dc-row" style={S.listRow}>
+              <span style={{ ...S.dotSm, background: catById(a.category)?.color || "#999" }} />
+              <span style={{ flex: 1, color: T.text, fontSize: 13.5 }}>{a.name}</span>
+              <span style={{ fontSize: 12, color: T.textSecondary }}>{a.doneDate}</span>
+              <button className="dc-btn" style={S.xBtn} onClick={() => toggleDone(a.id)}>Undo</button>
+            </div>
+          ))}
+          {!doneList.length && <div style={{ color: T.textSecondary, fontSize: 13, padding: "6px 0" }}>Nothing marked done yet — check things off from the Picker or Manage tab.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Styles ----------
+
+function mkStyles(T) {
+  return {
+    T,
+    page: { background: T.bg, minHeight: "100%", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif", color: T.text, boxSizing: "border-box" },
+    pageInner: { maxWidth: 900, margin: "0 auto", padding: "24px 20px 50px" },
+    topbar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 20px", borderBottom: `1px solid ${T.border}`, position: "sticky", top: 0, background: T.bg, zIndex: 10 },
+    tabs: { display: "flex", gap: 4, background: T.bgSubtle, borderRadius: 10, padding: 4 },
+    tab: { padding: "7px 14px", borderRadius: 8, fontSize: 13.5, fontWeight: 500, color: T.textSecondary },
+    tabActive: { background: T.surface, color: T.text, boxShadow: T.shadow, fontWeight: 600 },
+    gearBtn: { background: "none", border: `1px solid ${T.border}`, borderRadius: 8, width: 34, height: 34, fontSize: 15, color: T.text },
+    settingsPop: { position: "absolute", right: 0, top: 42, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 16, width: 220, boxShadow: T.shadow, zIndex: 20 },
+    h1: { fontSize: 26, fontWeight: 700, letterSpacing: -0.3, margin: "6px 0 2px" },
+    subtext: { fontSize: 14, color: T.textSecondary, marginBottom: 18 },
+    panel: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: "18px 20px", marginBottom: 18 },
+    filterLabel: { fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", color: T.textSecondary, marginBottom: 8, fontWeight: 600 },
+    miniCaption: { fontSize: 11.5, color: T.textTertiary, marginBottom: 6 },
+    filterRow2: { display: "flex", gap: 28, flexWrap: "wrap", marginTop: 14 },
+    chipRow: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" },
+    chip: { display: "flex", alignItems: "center", gap: 6, border: "1.5px solid", borderRadius: 999, padding: "6px 12px", fontSize: 13, fontWeight: 500 },
+    chipSm: { border: "1.5px solid", borderRadius: 999, padding: "5px 11px", fontSize: 12 },
+    segItem: { border: "1.5px solid", borderRadius: 999, padding: "6px 14px", fontSize: 13, fontWeight: 600, minWidth: 30, textAlign: "center" },
+    dotSm: { width: 7, height: 7, borderRadius: "50%", display: "inline-block", flexShrink: 0 },
+    advToggle: { background: "none", border: "none", color: T.accent, fontSize: 13, cursor: "pointer", padding: "10px 0 2px", fontWeight: 600 },
+    advBox: { display: "flex", gap: 24, flexWrap: "wrap", paddingTop: 12, borderTop: `1px dashed ${T.border}`, marginTop: 10 },
+    btnPrimary: { background: T.accent, color: "#FFFFFF", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 600, fontSize: 13.5 },
+    btnPrimaryLg: { background: T.accent, color: "#FFFFFF", border: "none", borderRadius: 12, padding: "14px 34px", fontWeight: 700, fontSize: 15.5 },
+    btnSecondary: { background: "transparent", color: T.text, border: `1.5px solid ${T.border}`, borderRadius: 9, padding: "9px 16px", fontWeight: 600, fontSize: 13.5 },
+    btnGhost: { background: "transparent", color: T.text, border: `1.5px solid ${T.border}`, borderRadius: 9, padding: "9px 16px", fontWeight: 500, fontSize: 13.5 },
+    stepBtn: { background: T.bgSubtle, border: "none", width: 32, height: 32, fontSize: 16, color: T.text, fontWeight: 600 },
+    notice: { color: T.textSecondary, fontSize: 13.5, fontStyle: "italic", textAlign: "center", marginBottom: 14 },
+    shuffleBox: { display: "flex", justifyContent: "center", alignItems: "center", gap: 6, height: 50 },
+    dotBig: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
+    flipOuter: { width: "100%", maxWidth: 420, height: 250, margin: "0 auto" },
+    resultCard: { position: "absolute", inset: 0, borderRadius: 16, overflow: "hidden", border: `1px solid ${T.border}`, boxShadow: T.shadow, background: T.surface },
+    stripe: { height: 5, width: "100%" },
+    stripeSm: { height: 4, width: "100%" },
+    eyebrowSm: { fontSize: 10.5, letterSpacing: 0.6, textTransform: "uppercase", color: T.textTertiary, fontWeight: 600 },
+    cardTitle: { fontSize: 21, fontWeight: 700, color: T.text, marginTop: 6, lineHeight: 1.2, letterSpacing: -0.2 },
+    cardMeta: { display: "flex", gap: 6, fontSize: 12.5, color: T.textSecondary, marginTop: 10, flexWrap: "wrap" },
+    cardNotes: { fontSize: 12.5, color: T.textSecondary, marginTop: 10, lineHeight: 1.45 },
+    doneBtnCard: { marginTop: 16, background: "transparent", border: `1.5px solid ${T.text}`, color: T.text, borderRadius: 999, padding: "6px 14px", fontSize: 12, fontWeight: 600 },
+    doneBtnCardActive: { background: T.text, color: T.bg },
+    grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12, width: "100%" },
+    miniCard: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden" },
+    miniTitle: { fontSize: 14.5, fontWeight: 700, color: T.text, marginTop: 4, lineHeight: 1.25 },
+    miniMeta: { fontSize: 11.5, color: T.textSecondary, marginTop: 6 },
+    doneBtnMini: { marginTop: 8, background: "transparent", border: `1px solid ${T.text}`, color: T.text, borderRadius: 999, padding: "3px 10px", fontSize: 10.5, fontWeight: 600 },
+    input: { width: "100%", boxSizing: "border-box", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 11px", color: T.text, fontSize: 13.5, marginBottom: 10, outline: "none" },
+    linkBtn: { background: "none", border: "none", color: T.accent, fontSize: 13, fontWeight: 600 },
+    catManager: { background: T.bgSubtle, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, marginBottom: 16 },
+    catRow: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0" },
+    xBtn: { background: "none", border: "none", color: T.textSecondary, fontSize: 12.5, padding: "3px 6px", fontWeight: 500 },
+    listRow: { display: "flex", alignItems: "center", gap: 10, padding: "9px 6px", borderRadius: 6, borderBottom: `1px solid ${T.border}` },
+    pill: { display: "inline-flex", alignItems: "center", gap: 6, background: T.bgSubtle, borderRadius: 999, padding: "3px 9px", fontSize: 12 },
+    tableWrap: { overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 12 },
+    th: { textAlign: "left", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: T.textSecondary, padding: "10px 12px", borderBottom: `1px solid ${T.border}`, fontWeight: 600, whiteSpace: "nowrap" },
+    td: { padding: "10px 12px", fontSize: 13, color: T.text, borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" },
+    overlay: { position: "fixed", inset: 0, background: T.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 },
+    formBox: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 24, width: "100%", maxWidth: 440, maxHeight: "88vh", overflowY: "auto", boxShadow: T.shadow },
+    formTitle: { fontSize: 18, fontWeight: 700, color: T.text, marginBottom: 14 },
+    formLabel: { fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase", color: T.textSecondary, marginBottom: 4, display: "block", fontWeight: 600 },
+    statCard: { flex: "1 1 120px", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: "14px 16px" },
+  };
+}
