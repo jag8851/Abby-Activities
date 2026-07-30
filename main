@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, Component } from "react";
 import * as XLSX from "xlsx";
 
 // ---------- Palettes ----------
@@ -32,24 +32,31 @@ const seed = (name, category, cost, location, setting, weather, prep, notes) => 
 });
 
 const DEFAULT_ACTIVITIES = [
-  seed("Sunset at the Netherlands Carillon", "outdoors", 1, "Outdoor", "Away", "Good weather", "None", "Panoramic DC skyline view, few crowds. Right by Iwo Jima Memorial."),
-  seed("Forest walk on Roosevelt Island", "outdoors", 1, "Outdoor", "Away", "Good weather", "None", "Boardwalk trails, feels remote, 5 min from Rosslyn."),
-  seed("Sunset kayak from Key Bridge Boathouse", "outdoors", 2, "Outdoor", "Away", "Good weather", "Needs planning", "Rent a tandem kayak, roughly Apr-Oct season."),
-  seed("Sunrise hike at Great Falls Park", "outdoors", 1, "Outdoor", "Away", "Good weather", "None", "Genuinely stunning, worth the early wake-up."),
-  seed("Planet Word museum", "museums", 1, "Indoor", "Away", "Any", "None", "Interactive and playful, not stuffy. Chinatown."),
-  seed("The Phillips Collection", "museums", 2, "Indoor", "Away", "Any", "None", "Intimate mansion art collection in Dupont Circle."),
-  seed("National Building Museum", "museums", 2, "Indoor", "Away", "Any", "None", "Grand hall, check the current seasonal installation."),
-  seed("Food hall crawl at Union Market", "food", 2, "Indoor", "Away", "Any", "None", "Share small plates across 3-4 vendors instead of one meal."),
-  seed("Brewery flight at Bluejacket", "food", 2, "Either", "Away", "Any", "None", "Walk the Capitol Riverfront boardwalk after."),
-  seed("Comedy show at DC Improv", "nightlife", 2, "Indoor", "Away", "Any", "Needs planning", "Book ahead, sells out on weekends. Dupont."),
-  seed("Upscale mini golf at Puttery", "nightlife", 2, "Indoor", "Away", "Any", "None", "Playful, high energy, good with cocktails."),
-  seed("Cook a themed dinner at home", "stayin", 1, "Indoor", "Home", "Any", "Needs planning", "Pick a country, follow one real recipe from that cuisine."),
-  seed("Blind wine or cheese tasting at home", "stayin", 1, "Indoor", "Home", "Any", "Needs planning", "Cover the labels, rank favorites together."),
-  seed("One-off pottery class", "classes", 2, "Indoor", "Away", "Any", "Needs planning", "Wheel-throwing class, messy and funny, good photos."),
-  seed("Rock climbing at Movement Gym", "active", 2, "Indoor", "Away", "Any", "None", "Crystal City or Rockville locations."),
+  seed("Sunset at the Netherlands Carillon", "outdoors", [0], "Outdoor", "Away", "Good weather", "None", "Panoramic DC skyline view, few crowds. Right by Iwo Jima Memorial."),
+  seed("Forest walk on Roosevelt Island", "outdoors", [0], "Outdoor", "Away", "Good weather", "None", "Boardwalk trails, feels remote, 5 min from Rosslyn."),
+  seed("Sunset kayak from Key Bridge Boathouse", "outdoors", [2], "Outdoor", "Away", "Good weather", "Needs planning", "Rent a tandem kayak, roughly Apr-Oct season."),
+  seed("Sunrise hike at Great Falls Park", "outdoors", [0, 1], "Outdoor", "Away", "Good weather", "None", "Genuinely stunning, worth the early wake-up. Small park entrance fee, free if you walk in."),
+  seed("Planet Word museum", "museums", [0], "Indoor", "Away", "Any", "None", "Interactive and playful, not stuffy. Chinatown."),
+  seed("The Phillips Collection", "museums", [1, 2], "Indoor", "Away", "Any", "None", "Intimate mansion art collection in Dupont Circle."),
+  seed("National Building Museum", "museums", [1, 2], "Indoor", "Away", "Any", "None", "Grand hall, check the current seasonal installation."),
+  seed("Get dinner out", "food", [1, 2, 3], "Indoor", "Away", "Any", "None", "Flexible — pick a spot based on the mood, anywhere from casual to a nicer sit-down."),
+  seed("Food hall crawl at Union Market", "food", [1, 2], "Indoor", "Away", "Any", "None", "Share small plates across 3-4 vendors instead of one meal."),
+  seed("Brewery flight at Bluejacket", "food", [2], "Either", "Away", "Any", "None", "Walk the Capitol Riverfront boardwalk after."),
+  seed("Comedy show at DC Improv", "nightlife", [2], "Indoor", "Away", "Any", "Needs planning", "Book ahead, sells out on weekends. Dupont."),
+  seed("Upscale mini golf at Puttery", "nightlife", [2], "Indoor", "Away", "Any", "None", "Playful, high energy, good with cocktails."),
+  seed("Cook a themed dinner at home", "stayin", [1], "Indoor", "Home", "Any", "Needs planning", "Pick a country, follow one real recipe from that cuisine."),
+  seed("Blind wine or cheese tasting at home", "stayin", [1], "Indoor", "Home", "Any", "Needs planning", "Cover the labels, rank favorites together."),
+  seed("One-off pottery class", "classes", [2], "Indoor", "Away", "Any", "Needs planning", "Wheel-throwing class, messy and funny, good photos."),
+  seed("Rock climbing at Movement Gym", "active", [2], "Indoor", "Away", "Any", "None", "Crystal City or Rockville locations."),
 ];
 
-const COST_LABEL = ["$", "$$", "$$$", "$$$$"];
+const COST_LABEL = ["Free", "$", "$$", "$$$", "$$$$"];
+const COST_VALUES = [0, 1, 2, 3, 4];
+function costDisplay(costArr) {
+  const arr = Array.isArray(costArr) ? costArr : [costArr ?? 1];
+  if (!arr.length) return "—";
+  return [...arr].sort((a, b) => a - b).map((c) => COST_LABEL[c] ?? "$").join(" / ");
+}
 const LOCATIONS = ["Indoor", "Outdoor", "Either"];
 const LOCATION_FILTERS = ["Indoor", "Outdoor"];
 const SETTINGS_OPT = ["Home", "Away", "Either"];
@@ -57,7 +64,37 @@ const WEATHERS = ["Any", "Good weather", "Rain OK"];
 const PREPS = ["None", "Needs planning"];
 const COUNT_PRESETS = [1, 3, 5, 10];
 
+// Guarantees every activity has a valid shape, whatever older/partial data it
+// came from (a past schema version, a bad import row, manual storage editing, etc.)
+function normalizeActivity(a, categories) {
+  const catIds = categories.map((c) => c.id);
+  const rawCost = Array.isArray(a?.cost) ? a.cost : a?.cost !== undefined ? [a.cost] : [1];
+  const cleanCost = rawCost.filter((n) => Number.isInteger(n) && n >= 0 && n <= 4);
+  return {
+    id: a?.id || uid(),
+    name: typeof a?.name === "string" && a.name.trim() ? a.name : "Untitled activity",
+    category: catIds.includes(a?.category) ? a.category : (catIds[0] || ""),
+    cost: cleanCost.length ? cleanCost : [1],
+    location: LOCATIONS.includes(a?.location) ? a.location : "Indoor",
+    setting: SETTINGS_OPT.includes(a?.setting) ? a.setting : "Away",
+    weather: WEATHERS.includes(a?.weather) ? a.weather : "Any",
+    prep: PREPS.includes(a?.prep) ? a.prep : "None",
+    notes: typeof a?.notes === "string" ? a.notes : "",
+    done: !!a?.done,
+    doneDate: a?.doneDate || null,
+  };
+}
+
+// Passcode is pre-set here so the app unlocks automatically while you're
+// testing — change this string (or use Settings > Reset passcode, then set
+// a new one through the lock screen) whenever you want.
+const DEV_AUTO_PASSCODE = "Abby&Josh:)";
+
 // ---------- Storage ----------
+// NOTE: this preview uses window.storage (Claude's built-in persistence) so your
+// data survives between visits while you're testing here. On a real GitHub Pages
+// deploy there's no window.storage — swap loadKey/saveKey below to read/write
+// localStorage instead (a couple lines each, same shape).
 
 async function loadKey(key, fallback) {
   try {
@@ -77,6 +114,65 @@ async function saveKey(key, value) {
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+// ---------- Passcode + encryption ----------
+// Your passcode is never stored — only a SHA-256 hash of it, used to verify you
+// typed the right thing. The passcode itself is kept in memory for the session
+// and used to derive the AES key for encrypted backups, so a backup file you
+// export is genuinely unreadable without the passcode (not just hidden by the UI).
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function toB64(bytes) {
+  let s = "";
+  bytes.forEach((b) => (s += String.fromCharCode(b)));
+  return btoa(s);
+}
+function fromB64(str) {
+  return Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
+}
+async function deriveKey(passphrase, saltBytes) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: saltBytes, iterations: 150000, hash: "SHA-256" },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+async function encryptBackup(obj, passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(passphrase, salt);
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+  return { v: 1, salt: toB64(salt), iv: toB64(iv), ct: toB64(new Uint8Array(ct)) };
+}
+async function decryptBackup(blob, passphrase) {
+  const salt = fromB64(blob.salt);
+  const iv = fromB64(blob.iv);
+  const key = await deriveKey(passphrase, salt);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, fromB64(blob.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+// Name/path of the encrypted file committed to the repo, fetched relative to
+// wherever index.html is served from. Rename here if you want a different path.
+const SEED_FILE_NAME = "./data.json";
+
+async function fetchSeedBlob() {
+  try {
+    const res = await fetch(SEED_FILE_NAME, { cache: "no-store" });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json && json.ct && json.iv && json.salt) return json;
+    return null;
+  } catch {
+    return null; // no file, offline, or not deployed yet — fall back to local/create flow
+  }
+}
 
 // ---------- Import field parsing ----------
 
@@ -105,15 +201,25 @@ function guessColumn(headers, field) {
   return "";
 }
 
-function parseCost(raw) {
-  if (raw === null || raw === undefined || raw === "") return 1;
-  if (typeof raw === "number") return Math.min(4, Math.max(1, Math.round(raw) || 1));
+function parseCostMulti(raw) {
+  if (raw === null || raw === undefined || raw === "") return [1];
+  if (typeof raw === "number") return [Math.min(4, Math.max(0, Math.round(raw)))];
   const s = String(raw).trim();
-  const dollarCount = (s.match(/\$/g) || []).length;
-  if (dollarCount > 0) return Math.min(4, dollarCount);
-  const n = parseFloat(s);
-  if (!isNaN(n) && n > 0) return Math.min(4, Math.max(1, Math.round(n)));
-  return 1;
+  if (!s) return [1];
+  if (/free/i.test(s) && !/\$/.test(s) && !/\d/.test(s)) return [0];
+
+  const tiers = new Set();
+  if (/free/i.test(s)) tiers.add(0);
+  // one or more runs of $ signs, e.g. "$-$$$", "$, $$$", "$$"
+  const dollarRuns = s.match(/\${1,4}/g);
+  if (dollarRuns) dollarRuns.forEach((run) => tiers.add(Math.min(4, run.length)));
+  if (!dollarRuns && !tiers.size) {
+    // fall back to plain numbers, e.g. "1-3", "2", "1,2"
+    const nums = s.match(/\d+/g);
+    if (nums) nums.forEach((n) => tiers.add(Math.min(4, Math.max(0, parseInt(n, 10)))));
+  }
+  if (!tiers.size) return [1];
+  return [...tiers].sort((a, b) => a - b);
 }
 function parseLocation(raw) {
   const s = String(raw || "").toLowerCase();
@@ -162,7 +268,7 @@ function getTheme(mode, accent) {
 
 // ---------- Component ----------
 
-export default function DateIdeaPicker() {
+function DateIdeaPicker() {
   const [loaded, setLoaded] = useState(false);
   const [activities, setActivities] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -170,6 +276,21 @@ export default function DateIdeaPicker() {
   const [accent, setAccent] = useState(ACCENT_PRESETS[0].hex);
   const [page, setPage] = useState("picker"); // picker | manage | stats
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirmResetAll, setConfirmResetAll] = useState(false);
+
+  // passcode lock
+  const [passHash, setPassHash] = useState(null); // null until we know if a passcode exists
+  const [unlocked, setUnlocked] = useState(false);
+  const [lockMode, setLockMode] = useState("create"); // create | hash | seed
+  const [pendingSeedBlob, setPendingSeedBlob] = useState(null);
+  const [sessionPass, setSessionPass] = useState("");
+  const [passInput, setPassInput] = useState("");
+  const [passConfirm, setPassConfirm] = useState("");
+  const [lockError, setLockError] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState("");
+  const backupFileRef = useRef(null);
+
 
   // filters
   const [catFilter, setCatFilter] = useState([]);
@@ -183,8 +304,6 @@ export default function DateIdeaPicker() {
 
   // count controls (shared state across the three UI variants)
   const [drawCount, setDrawCount] = useState(1);
-  const [customOpen, setCustomOpen] = useState(false);
-  const [customVal, setCustomVal] = useState("1");
 
   // results
   const [shuffling, setShuffling] = useState(false);
@@ -195,6 +314,7 @@ export default function DateIdeaPicker() {
   // manage page
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [showCatManager, setShowCatManager] = useState(false);
   const [newCatName, setNewCatName] = useState("");
@@ -211,7 +331,7 @@ export default function DateIdeaPicker() {
   const fileInputRef = useRef(null);
 
   const blankForm = () => ({
-    name: "", category: categories[0]?.id || "", cost: 1, location: "Indoor",
+    name: "", category: categories[0]?.id || "", cost: [1], location: "Indoor",
     setting: "Away", weather: "Any", prep: "None", notes: "",
   });
   const [form, setForm] = useState(blankForm());
@@ -225,8 +345,47 @@ export default function DateIdeaPicker() {
       const acts = await loadKey("dc-date:activities", null);
       const cats = await loadKey("dc-date:categories", null);
       const settings = await loadKey("dc-date:settings", null);
+      const storedHash = await loadKey("dc-date:passHash", null);
+      const autoHash = await sha256Hex(DEV_AUTO_PASSCODE);
+
+      if (storedHash) {
+        // this device already has a passcode set locally — normal unlock-by-hash
+        setPassHash(storedHash);
+        setLockMode("hash");
+        if (storedHash === autoHash) {
+          // convenience auto-unlock for this preview only — remove for a real deploy
+          setSessionPass(DEV_AUTO_PASSCODE);
+          setUnlocked(true);
+        }
+      } else {
+        // no local passcode yet — check if the repo has a committed encrypted backup
+        // (this only resolves to something on a real GitHub Pages deploy with a
+        // data.json next to index.html; here in preview it'll just come back null)
+        const seedBlob = await fetchSeedBlob();
+        if (seedBlob) {
+          setPendingSeedBlob(seedBlob);
+          setLockMode("seed");
+        } else {
+          setLockMode("create");
+          // convenience auto-seed for this preview only — on a real first-ever deploy
+          // with no data.json yet, this would show the normal "create a passcode" form
+          await saveKey("dc-date:passHash", autoHash);
+          setPassHash(autoHash);
+          setSessionPass(DEV_AUTO_PASSCODE);
+          setUnlocked(true);
+        }
+      }
       const finalCats = cats && cats.length ? cats : DEFAULT_CATEGORIES;
-      const finalActs = acts && acts.length ? acts : DEFAULT_ACTIVITIES;
+      const rawActs = acts && acts.length ? acts : DEFAULT_ACTIVITIES;
+      // repair any activity saved under an older data shape (cost as a plain
+      // number, missing fields, an invalid enum value, a category id that no
+      // longer exists, etc.) so old testing data can never crash the app
+      let migrated = false;
+      const finalActs = rawActs.map((a) => {
+        const fixed = normalizeActivity(a, finalCats);
+        if (JSON.stringify(fixed) !== JSON.stringify(a)) migrated = true;
+        return fixed;
+      });
       setCategories(finalCats);
       setActivities(finalActs);
       if (settings) {
@@ -234,7 +393,7 @@ export default function DateIdeaPicker() {
         setAccent(settings.accent || ACCENT_PRESETS[0].hex);
       }
       if (!cats) await saveKey("dc-date:categories", finalCats);
-      if (!acts) await saveKey("dc-date:activities", finalActs);
+      if (!acts || migrated) await saveKey("dc-date:activities", finalActs);
       setLoaded(true);
     })();
   }, []);
@@ -259,7 +418,7 @@ export default function DateIdeaPicker() {
   function matches(a) {
     if (!includeDone && a.done) return false;
     if (catFilter.length && !catFilter.includes(a.category)) return false;
-    if (costFilter.length && !costFilter.includes(a.cost)) return false;
+    if (costFilter.length && !(Array.isArray(a.cost) ? a.cost : [a.cost]).some((c) => costFilter.includes(c))) return false;
     if (locFilter && a.location !== locFilter && a.location !== "Either") return false;
     if (weatherFilter && a.weather !== weatherFilter && a.weather !== "Any") return false;
     if (settingFilter && a.setting !== settingFilter && a.setting !== "Either") return false;
@@ -321,24 +480,38 @@ export default function DateIdeaPicker() {
     if (results) setResults(results.filter((a) => a.id !== id));
   }
   function openEdit(a) {
-    setEditingId(a.id);
-    setForm({ name: a.name, category: a.category, cost: a.cost, location: a.location, setting: a.setting, weather: a.weather, prep: a.prep, notes: a.notes || "" });
+    const fixed = normalizeActivity(a, categories);
+    setEditingId(fixed.id);
+    setForm({ name: fixed.name, category: fixed.category, cost: fixed.cost, location: fixed.location, setting: fixed.setting, weather: fixed.weather, prep: fixed.prep, notes: fixed.notes });
+    setFormError("");
     setShowForm(true);
   }
   function openAdd() {
     setEditingId(null);
     setForm(blankForm());
+    setFormError("");
     setShowForm(true);
   }
   function submitForm(e) {
     e.preventDefault();
-    if (!form.name.trim() || !form.category) return;
-    if (editingId) {
-      persistActivities(activities.map((a) => (a.id === editingId ? { ...a, ...form } : a)));
-    } else {
-      persistActivities([...activities, { id: uid(), ...form, done: false, doneDate: null }]);
+    setFormError("");
+    if (!form.name.trim() || !form.category) {
+      setFormError("Give it a name and a category before saving.");
+      return;
     }
-    setShowForm(false);
+    try {
+      if (editingId) {
+        const next = activities.map((a) => (a.id === editingId ? normalizeActivity({ ...a, ...form }, categories) : a));
+        persistActivities(next);
+      } else {
+        const next = [...activities, normalizeActivity({ id: uid(), ...form, done: false, doneDate: null }, categories)];
+        persistActivities(next);
+      }
+      setShowForm(false);
+    } catch (err) {
+      console.error(err);
+      setFormError(`Couldn't save: ${err.message || "something went wrong"}. This is a bug — tell me exactly what you filled in and I'll fix it.`);
+    }
   }
   function addCategory() {
     if (!newCatName.trim()) return;
@@ -386,7 +559,7 @@ export default function DateIdeaPicker() {
     return {
       name: String(nameVal || "").trim(),
       categoryRaw: String(catRaw || "").trim(),
-      cost: parseCost(fieldMap.cost ? row[fieldMap.cost] : ""),
+      cost: parseCostMulti(fieldMap.cost ? row[fieldMap.cost] : ""),
       location: parseLocation(fieldMap.location ? row[fieldMap.location] : ""),
       setting: parseSetting(fieldMap.setting ? row[fieldMap.setting] : ""),
       weather: parseWeather(fieldMap.weather ? row[fieldMap.weather] : ""),
@@ -444,11 +617,162 @@ export default function DateIdeaPicker() {
     persistSettings(theme, hex);
   }
 
+  // ---------- Passcode ----------
+
+  async function createPasscode(e) {
+    e.preventDefault();
+    setLockError("");
+    if (passInput.length < 8) {
+      setLockError("Use at least 8 characters — this doubles as your backup encryption key.");
+      return;
+    }
+    if (passInput !== passConfirm) {
+      setLockError("Those don't match.");
+      return;
+    }
+    try {
+      const hash = await sha256Hex(passInput);
+      await saveKey("dc-date:passHash", hash);
+      setPassHash(hash);
+      setSessionPass(passInput);
+      setUnlocked(true);
+    } catch (err) {
+      setLockError("Something went wrong creating that passcode — try again.");
+      console.error(err);
+    }
+  }
+
+  async function tryUnlock(e) {
+    e.preventDefault();
+    setLockError("");
+    try {
+      const hash = await sha256Hex(passInput);
+      if (hash === passHash) {
+        setSessionPass(passInput);
+        setUnlocked(true);
+      } else {
+        setLockError("Incorrect passcode.");
+      }
+    } catch (err) {
+      setLockError("Something went wrong unlocking — try again.");
+      console.error(err);
+    }
+  }
+
+  async function unlockFromSeed(e) {
+    e.preventDefault();
+    setLockError("");
+    try {
+      const data = await decryptBackup(pendingSeedBlob, passInput);
+      if (!data.activities || !data.categories) throw new Error("bad shape");
+      const hash = await sha256Hex(passInput);
+      setActivities(data.activities);
+      setCategories(data.categories);
+      await saveKey("dc-date:activities", data.activities);
+      await saveKey("dc-date:categories", data.categories);
+      await saveKey("dc-date:passHash", hash);
+      setPassHash(hash);
+      setSessionPass(passInput);
+      setUnlocked(true);
+    } catch (err) {
+      setLockError("Couldn't unlock — wrong passcode, or the file wasn't a backup from this app.");
+    }
+  }
+
+  async function resetPasscode() {
+    await saveKey("dc-date:passHash", null);
+    setPassHash(null);
+    setUnlocked(false);
+    setLockMode("create");
+    setPendingSeedBlob(null);
+    setPassInput("");
+    setPassConfirm("");
+    setSessionPass("");
+  }
+
+  async function resetAllData() {
+    await saveKey("dc-date:activities", DEFAULT_ACTIVITIES);
+    await saveKey("dc-date:categories", DEFAULT_CATEGORIES);
+    await saveKey("dc-date:passHash", null);
+    await saveKey("dc-date:settings", null);
+    setActivities(DEFAULT_ACTIVITIES);
+    setCategories(DEFAULT_CATEGORIES);
+    setTheme("light");
+    setAccent(ACCENT_PRESETS[0].hex);
+    setPassHash(null);
+    setUnlocked(false);
+    setLockMode("create");
+    setPendingSeedBlob(null);
+    setPassInput("");
+    setPassConfirm("");
+    setSessionPass("");
+    setSettingsOpen(false);
+  }
+
+  // ---------- Encrypted backup (export/import to sync via GitHub) ----------
+
+  async function exportBackup() {
+    setBackupBusy(true);
+    setBackupMsg("");
+    try {
+      const blob = await encryptBackup({ activities, categories }, sessionPass);
+      const text = JSON.stringify(blob, null, 2);
+      const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "dc-dates-backup.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      setBackupMsg("Downloaded — commit this file to your repo to sync it.");
+    } catch (err) {
+      setBackupMsg("Export failed — try again.");
+    }
+    setBackupBusy(false);
+  }
+
+  function handleBackupFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBackupBusy(true);
+    setBackupMsg("");
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const blob = JSON.parse(evt.target.result);
+        const data = await decryptBackup(blob, sessionPass);
+        if (!data.activities || !data.categories) throw new Error("bad shape");
+        setActivities(data.activities);
+        setCategories(data.categories);
+        await saveKey("dc-date:activities", data.activities);
+        await saveKey("dc-date:categories", data.categories);
+        setBackupMsg(`Loaded ${data.activities.length} activities from backup.`);
+      } catch (err) {
+        setBackupMsg("Couldn't decrypt that file — wrong passcode, or it's not a backup from this app.");
+      }
+      setBackupBusy(false);
+      if (backupFileRef.current) backupFileRef.current.value = "";
+    };
+    reader.readAsText(file);
+  }
+
   if (!loaded) {
     return (
       <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", height: 300 }}>
         <div style={{ color: S.T.textSecondary, fontSize: 14 }}>Loading…</div>
       </div>
+    );
+  }
+
+  if (!unlocked) {
+    return (
+      <LockScreen
+        S={S} T={T}
+        mode={lockMode}
+        passInput={passInput} setPassInput={setPassInput}
+        passConfirm={passConfirm} setPassConfirm={setPassConfirm}
+        lockError={lockError}
+        onSubmit={lockMode === "create" ? createPasscode : lockMode === "seed" ? unlockFromSeed : tryUnlock}
+      />
     );
   }
 
@@ -499,11 +823,23 @@ export default function DateIdeaPicker() {
                 ))}
               </div>
               <div style={S.filterLabel}>Accent color</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                 {ACCENT_PRESETS.map((c) => (
                   <span key={c.hex} onClick={() => changeAccent(c.hex)} title={c.name}
                     style={{ width: 24, height: 24, borderRadius: "50%", background: c.hex, cursor: "pointer", display: "inline-block", border: accent === c.hex ? `2px solid ${T.text}` : "2px solid transparent", boxShadow: accent === c.hex ? `0 0 0 2px ${T.bg}` : "none" }} />
                 ))}
+              </div>
+              <div style={{ borderTop: `1px dashed ${T.border}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <button className="dc-btn" style={{ ...S.linkBtn, fontSize: 12, color: "#FF3B30" }} onClick={resetPasscode}>
+                  Reset passcode
+                </button>
+                <button className="dc-btn" style={{ ...S.linkBtn, fontSize: 12, color: "#FF3B30" }}
+                  onClick={() => {
+                    if (confirmResetAll) resetAllData();
+                    else { setConfirmResetAll(true); setTimeout(() => setConfirmResetAll(false), 4000); }
+                  }}>
+                  {confirmResetAll ? "Click again to erase everything" : "Reset all data"}
+                </button>
               </div>
             </div>
           )}
@@ -523,8 +859,6 @@ export default function DateIdeaPicker() {
           includeDone={includeDone} setIncludeDone={setIncludeDone}
           toggleMulti={toggleMulti} toggleSingle={toggleSingle}
           drawCount={drawCount} setCount={setCount}
-          customOpen={customOpen} setCustomOpen={setCustomOpen}
-          customVal={customVal} setCustomVal={setCustomVal}
           draw={draw} shuffling={shuffling} results={results} flip={flip}
           emptyNotice={emptyNotice} catById={catById} toggleDone={toggleDone}
         />
@@ -542,6 +876,8 @@ export default function DateIdeaPicker() {
           newCatColor={newCatColor} setNewCatColor={setNewCatColor}
           addCategory={addCategory} removeCategory={removeCategory}
           openImport={() => { setImportOpen(true); setImportStep("upload"); setImportError(""); }}
+          exportBackup={exportBackup} handleBackupFile={handleBackupFile} backupFileRef={backupFileRef}
+          backupBusy={backupBusy} backupMsg={backupMsg}
         />
       )}
 
@@ -560,13 +896,25 @@ export default function DateIdeaPicker() {
             <select style={S.input} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-            <div style={{ display: "flex", gap: 10 }}>
-              <div style={{ flex: 1 }}>
-                <label style={S.formLabel}>Cost</label>
-                <select style={S.input} value={form.cost} onChange={(e) => setForm({ ...form, cost: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{COST_LABEL[n - 1]}</option>)}
-                </select>
+            <div style={{ marginBottom: 4 }}>
+              <label style={S.formLabel}>Cost (select all that apply)</label>
+              <div style={{ ...S.chipRow, marginBottom: 10 }}>
+                {COST_VALUES.map((n) => {
+                  const active = form.cost.includes(n);
+                  return (
+                    <div key={n} className="dc-chip"
+                      onClick={() => {
+                        const next = active ? form.cost.filter((c) => c !== n) : [...form.cost, n];
+                        setForm({ ...form, cost: next.length ? next : [n] });
+                      }}
+                      style={{ ...S.chipSm, borderColor: T.accent, background: active ? T.accent : "transparent", color: active ? "#FFFFFF" : T.text }}>
+                      {COST_LABEL[n]}
+                    </div>
+                  );
+                })}
               </div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
               <div style={{ flex: 1 }}>
                 <label style={S.formLabel}>Location</label>
                 <select style={S.input} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}>
@@ -596,6 +944,7 @@ export default function DateIdeaPicker() {
             </div>
             <label style={S.formLabel}>Notes (optional)</label>
             <textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            {formError && <div style={{ color: "#FF3B30", fontSize: 12.5, marginTop: 4, marginBottom: 6, lineHeight: 1.4 }}>{formError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 14, justifyContent: "flex-end" }}>
               <button type="button" className="dc-btn" style={S.btnGhost} onClick={() => setShowForm(false)}>Cancel</button>
               <button type="submit" className="dc-btn" style={S.btnPrimary}>{editingId ? "Save changes" : "Add activity"}</button>
@@ -655,7 +1004,7 @@ export default function DateIdeaPicker() {
                           <tr key={i}>
                             <td style={S.td}>{t.name || "—"}</td>
                             <td style={S.td}>{t.categoryRaw || "—"}</td>
-                            <td style={S.td}>{COST_LABEL[t.cost - 1]}</td>
+                            <td style={S.td}>{costDisplay(t.cost)}</td>
                             <td style={S.td}>{t.location}</td>
                           </tr>
                         );
@@ -678,12 +1027,49 @@ export default function DateIdeaPicker() {
 
 // ---------- Picker Page ----------
 
+// ---------- Lock Screen ----------
+
+function LockScreen({ S, T, mode, passInput, setPassInput, passConfirm, setPassConfirm, lockError, onSubmit }) {
+  const creating = mode === "create";
+  const isSeed = mode === "seed";
+  return (
+    <div style={{ ...S.page, minHeight: 420, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <form onSubmit={onSubmit} style={{ ...S.formBox, maxWidth: 340, textAlign: "center" }}>
+        <div style={{ fontSize: 28, marginBottom: 8 }}>🔒</div>
+        <div style={S.formTitle}>{creating ? "Set a passcode" : "Enter your passcode"}</div>
+        <div style={{ color: T.textSecondary, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+          {creating
+            ? "This unlocks the app and encrypts any backups you export — use at least 8 characters."
+            : isSeed
+            ? "Found a saved backup — enter the passcode it was encrypted with to unlock it."
+            : "Unlock to see your activities."}
+        </div>
+        <input
+          type="password" autoFocus style={S.input}
+          placeholder={creating ? "Create a passcode" : "Passcode"}
+          value={passInput} onChange={(e) => setPassInput(e.target.value)}
+        />
+        {creating && (
+          <input
+            type="password" style={S.input} placeholder="Confirm passcode"
+            value={passConfirm} onChange={(e) => setPassConfirm(e.target.value)}
+          />
+        )}
+        {lockError && <div style={{ color: "#FF3B30", fontSize: 12.5, marginBottom: 8 }}>{lockError}</div>}
+        <button type="submit" className="dc-btn" style={{ ...S.btnPrimary, width: "100%", padding: "11px 0", marginTop: 4 }}>
+          {creating ? "Create & unlock" : "Unlock"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function PickerPage(props) {
   const {
     T, S, categories, catFilter, setCatFilter, costFilter, setCostFilter, locFilter, setLocFilter,
     advOpen, setAdvOpen, weatherFilter, setWeatherFilter, settingFilter, setSettingFilter,
     prepFilter, setPrepFilter, includeDone, setIncludeDone, toggleMulti, toggleSingle,
-    drawCount, setCount, customOpen, setCustomOpen, customVal, setCustomVal,
+    drawCount, setCount,
     draw, shuffling, results, flip, emptyNotice, catById, toggleDone,
   } = props;
 
@@ -711,12 +1097,12 @@ function PickerPage(props) {
           <div>
             <div style={S.filterLabel}>Cost</div>
             <div style={S.chipRow}>
-              {[1, 2, 3, 4].map((n) => {
+              {COST_VALUES.map((n) => {
                 const active = costFilter.includes(n);
                 return (
                   <div key={n} className="dc-chip" onClick={() => toggleMulti(costFilter, setCostFilter, n)}
                     style={{ ...S.chip, borderColor: T.accent, background: active ? T.accent : "transparent", color: active ? "#FFFFFF" : T.text }}>
-                    {COST_LABEL[n - 1]}
+                    {COST_LABEL[n]}
                   </div>
                 );
               })}
@@ -798,52 +1184,16 @@ function PickerPage(props) {
       <div style={S.panel}>
         <div style={S.filterLabel}>How many activities?</div>
 
-        <div style={{ marginBottom: 14 }}>
-          <div style={S.chipRow}>
-            {COUNT_PRESETS.map((n) => (
-              <div key={n} className="dc-chip" onClick={() => setCount(n)}
-                style={{ ...S.segItem, borderColor: T.accent, background: drawCount === n ? T.accent : "transparent", color: drawCount === n ? "#FFFFFF" : T.text }}>
-                {n}
-              </div>
-            ))}
-            <div className="dc-chip" onClick={() => setCount("all")}
-              style={{ ...S.segItem, borderColor: T.accent, background: drawCount === "all" ? T.accent : "transparent", color: drawCount === "all" ? "#FFFFFF" : T.text }}>
-              All
+        <div style={S.chipRow}>
+          {COUNT_PRESETS.map((n) => (
+            <div key={n} className="dc-chip" onClick={() => setCount(n)}
+              style={{ ...S.segItem, borderColor: T.accent, background: drawCount === n ? T.accent : "transparent", color: drawCount === n ? "#FFFFFF" : T.text }}>
+              {n}
             </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
-          <div>
-            <div style={S.miniCaption}>Dropdown</div>
-            <select
-              style={{ ...S.input, width: 150, margin: 0 }}
-              value={COUNT_PRESETS.includes(drawCount) ? drawCount : drawCount === "all" ? "all" : "custom"}
-              onChange={(e) => {
-                if (e.target.value === "custom") { setCustomOpen(true); }
-                else if (e.target.value === "all") { setCount("all"); setCustomOpen(false); }
-                else { setCount(Number(e.target.value)); setCustomOpen(false); }
-              }}
-            >
-              {COUNT_PRESETS.map((n) => <option key={n} value={n}>{n} {n === 1 ? "activity" : "activities"}</option>)}
-              <option value="all">All matches</option>
-              <option value="custom">Custom…</option>
-            </select>
-            {customOpen && (
-              <input type="number" min={1} max={50} value={customVal}
-                onChange={(e) => { setCustomVal(e.target.value); setCount(parseInt(e.target.value, 10)); }}
-                placeholder="Number"
-                style={{ ...S.input, width: 90, marginTop: 8 }} />
-            )}
-          </div>
-
-          <div>
-            <div style={S.miniCaption}>Stepper</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 0, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", width: "fit-content" }}>
-              <button className="dc-btn" style={S.stepBtn} onClick={() => setCount(drawCount === "all" ? 9 : drawCount - 1)}>−</button>
-              <div style={{ padding: "0 16px", fontSize: 14, fontWeight: 600, color: T.text, minWidth: 30, textAlign: "center" }}>{drawCount === "all" ? "All" : drawCount}</div>
-              <button className="dc-btn" style={S.stepBtn} onClick={() => setCount(drawCount === "all" ? "all" : drawCount + 1)}>+</button>
-            </div>
+          ))}
+          <div className="dc-chip" onClick={() => setCount("all")}
+            style={{ ...S.segItem, borderColor: T.accent, background: drawCount === "all" ? T.accent : "transparent", color: drawCount === "all" ? "#FFFFFF" : T.text }}>
+            All
           </div>
         </div>
       </div>
@@ -872,7 +1222,7 @@ function PickerPage(props) {
                 <div style={S.eyebrowSm}>{catById(results[0].category)?.name || "Uncategorized"}</div>
                 <div style={S.cardTitle}>{results[0].name}</div>
                 <div style={S.cardMeta}>
-                  <span>{COST_LABEL[results[0].cost - 1]}</span><span>·</span>
+                  <span>{costDisplay(results[0].cost)}</span><span>·</span>
                   <span>{results[0].location}</span><span>·</span>
                   <span>{results[0].setting}</span><span>·</span>
                   <span>{results[0].weather}</span>
@@ -895,7 +1245,7 @@ function PickerPage(props) {
               <div style={{ padding: "13px 15px" }}>
                 <div style={S.eyebrowSm}>{catById(a.category)?.name}</div>
                 <div style={S.miniTitle}>{a.name}</div>
-                <div style={S.miniMeta}>{COST_LABEL[a.cost - 1]} · {a.location} · {a.setting}</div>
+                <div style={S.miniMeta}>{costDisplay(a.cost)} · {a.location} · {a.setting}</div>
                 <button className="dc-btn" style={{ ...S.doneBtnMini, ...(a.done ? S.doneBtnCardActive : {}) }} onClick={() => toggleDone(a.id)}>
                   {a.done ? "✓" : "Mark done"}
                 </button>
@@ -916,6 +1266,7 @@ function ManagePage(props) {
     openAdd, openEdit, deleteActivity, toggleDone,
     showCatManager, setShowCatManager, newCatName, setNewCatName, newCatColor, setNewCatColor,
     addCategory, removeCategory, openImport,
+    exportBackup, handleBackupFile, backupFileRef, backupBusy, backupMsg,
   } = props;
 
   return (
@@ -929,6 +1280,19 @@ function ManagePage(props) {
           <button className="dc-btn" style={S.btnGhost} onClick={openImport}>Import from Excel</button>
           <button className="dc-btn" style={S.btnPrimary} onClick={openAdd}>+ Add activity</button>
         </div>
+      </div>
+
+      <div style={{ ...S.panel, marginTop: 14 }}>
+        <div style={S.filterLabel}>Encrypted backup (for syncing via GitHub)</div>
+        <div style={{ color: T.textSecondary, fontSize: 12.5, marginBottom: 10, lineHeight: 1.5 }}>
+          Export downloads an encrypted file with everything below — commit it to your repo to update the copy others load. Import loads one back in (your passcode decrypts it).
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="dc-btn" style={S.btnGhost} disabled={backupBusy} onClick={exportBackup}>Export encrypted backup</button>
+          <button className="dc-btn" style={S.btnGhost} disabled={backupBusy} onClick={() => backupFileRef.current?.click()}>Import encrypted backup</button>
+          <input ref={backupFileRef} type="file" accept=".json" onChange={handleBackupFile} style={{ display: "none" }} />
+        </div>
+        {backupMsg && <div style={{ fontSize: 12.5, color: T.textSecondary, marginTop: 8 }}>{backupMsg}</div>}
       </div>
 
       <div style={{ display: "flex", gap: 10, margin: "18px 0 14px", flexWrap: "wrap", alignItems: "center" }}>
@@ -985,7 +1349,7 @@ function ManagePage(props) {
                     {catById(a.category)?.name || "—"}
                   </span>
                 </td>
-                <td style={S.td}>{COST_LABEL[a.cost - 1]}</td>
+                <td style={S.td}>{costDisplay(a.cost)}</td>
                 <td style={S.td}>{a.location}</td>
                 <td style={S.td}>{a.setting}</td>
                 <td style={S.td}>{a.weather}</td>
@@ -1132,4 +1496,57 @@ function mkStyles(T) {
     formLabel: { fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase", color: T.textSecondary, marginBottom: 4, display: "block", fontWeight: 600 },
     statCard: { flex: "1 1 120px", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: "14px 16px" },
   };
+}
+
+// ---------- Error boundary ----------
+// Catches any render crash and shows the real error instead of a blank/frozen
+// screen, with an escape hatch to wipe local data if it's a data problem.
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("DateIdeaPicker crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ background: "#fff", color: "#1D1D1F", fontFamily: "-apple-system, sans-serif", padding: 24, borderRadius: 12, border: "1px solid #E5E5EA", maxWidth: 520, margin: "24px auto" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Something crashed</div>
+          <div style={{ fontSize: 13, color: "#6E6E73", marginBottom: 12, lineHeight: 1.5 }}>
+            Copy this and send it over so it can be fixed:
+          </div>
+          <pre style={{ background: "#F5F5F7", padding: 12, borderRadius: 8, fontSize: 11.5, overflowX: "auto", whiteSpace: "pre-wrap" }}>
+            {String(this.state.error?.message || this.state.error)}
+          </pre>
+          <button
+            onClick={async () => {
+              try {
+                await window.storage.set("dc-date:activities", "null", false);
+                await window.storage.set("dc-date:categories", "null", false);
+              } catch {}
+              this.setState({ error: null });
+            }}
+            style={{ marginTop: 14, background: "#FF3B30", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+          >
+            Wipe local data and reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function DateIdeaPickerWithBoundary() {
+  return (
+    <ErrorBoundary>
+      <DateIdeaPicker />
+    </ErrorBoundary>
+  );
 }
