@@ -1,5 +1,29 @@
-import { useState, useEffect, useRef, useMemo, Component } from "react";
-import * as XLSX from "xlsx";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DC Date Picker</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #FFFFFF; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React (CDN, no build step needed) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+<!-- Babel standalone: transpiles the JSX below directly in the browser -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
+<!-- SheetJS: reads .xlsx/.csv files for the Import feature -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" crossorigin></script>
+
+<!-- App source, inert (not executed directly) so we can control exactly how Babel transpiles it -->
+<script type="text/plain" id="app-source">
+const { useState, useEffect, useRef, useMemo, Component } = React;
+/* global XLSX */
 
 // ---------- Palettes ----------
 
@@ -85,29 +109,23 @@ function normalizeActivity(a, categories) {
   };
 }
 
-// Passcode is pre-set here so the app unlocks automatically while you're
-// testing — change this string (or use Settings > Reset passcode, then set
-// a new one through the lock screen) whenever you want.
-const DEV_AUTO_PASSCODE = "Abby&Josh:)";
-
 // ---------- Storage ----------
-// NOTE: this preview uses window.storage (Claude's built-in persistence) so your
-// data survives between visits while you're testing here. On a real GitHub Pages
-// deploy there's no window.storage — swap loadKey/saveKey below to read/write
-// localStorage instead (a couple lines each, same shape).
+// Real browser localStorage — persists per device/browser only (no server, no
+// sync between devices). Use the encrypted export/import in the Manage tab
+// to move data between devices or commit an updated copy to your repo.
 
 async function loadKey(key, fallback) {
   try {
-    const res = await window.storage.get(key, false);
-    if (res && res.value) return JSON.parse(res.value);
-    return fallback;
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw);
   } catch {
     return fallback;
   }
 }
 async function saveKey(key, value) {
   try {
-    await window.storage.set(key, JSON.stringify(value), false);
+    localStorage.setItem(key, JSON.stringify(value));
   } catch (e) {
     console.error("storage save failed", e);
   }
@@ -346,33 +364,21 @@ function DateIdeaPicker() {
       const cats = await loadKey("dc-date:categories", null);
       const settings = await loadKey("dc-date:settings", null);
       const storedHash = await loadKey("dc-date:passHash", null);
-      const autoHash = await sha256Hex(DEV_AUTO_PASSCODE);
 
       if (storedHash) {
-        // this device already has a passcode set locally — normal unlock-by-hash
+        // this device already has a passcode set locally — ask for it
         setPassHash(storedHash);
         setLockMode("hash");
-        if (storedHash === autoHash) {
-          // convenience auto-unlock for this preview only — remove for a real deploy
-          setSessionPass(DEV_AUTO_PASSCODE);
-          setUnlocked(true);
-        }
       } else {
         // no local passcode yet — check if the repo has a committed encrypted backup
-        // (this only resolves to something on a real GitHub Pages deploy with a
-        // data.json next to index.html; here in preview it'll just come back null)
         const seedBlob = await fetchSeedBlob();
         if (seedBlob) {
           setPendingSeedBlob(seedBlob);
           setLockMode("seed");
         } else {
+          // first-ever run on this device, nothing to unlock yet — show the
+          // normal "create a passcode" form
           setLockMode("create");
-          // convenience auto-seed for this preview only — on a real first-ever deploy
-          // with no data.json yet, this would show the normal "create a passcode" form
-          await saveKey("dc-date:passHash", autoHash);
-          setPassHash(autoHash);
-          setSessionPass(DEV_AUTO_PASSCODE);
-          setUnlocked(true);
         }
       }
       const finalCats = cats && cats.length ? cats : DEFAULT_CATEGORIES;
@@ -1527,8 +1533,8 @@ class ErrorBoundary extends Component {
           <button
             onClick={async () => {
               try {
-                await window.storage.set("dc-date:activities", "null", false);
-                await window.storage.set("dc-date:categories", "null", false);
+                localStorage.removeItem("dc-date:activities");
+                localStorage.removeItem("dc-date:categories");
               } catch {}
               this.setState({ error: null });
             }}
@@ -1543,10 +1549,30 @@ class ErrorBoundary extends Component {
   }
 }
 
-export default function DateIdeaPickerWithBoundary() {
+function DateIdeaPickerWithBoundary() {
   return (
     <ErrorBoundary>
       <DateIdeaPicker />
     </ErrorBoundary>
   );
 }
+
+ReactDOM.createRoot(document.getElementById("root")).render(<DateIdeaPickerWithBoundary />);
+
+</script>
+
+<!-- Bootstrap: transpile with the classic JSX runtime (React.createElement),
+     not the automatic runtime, since a plain script tag can't resolve the
+     "import ... from react/jsx-runtime" the automatic runtime emits. -->
+<script>
+  (function () {
+    var source = document.getElementById("app-source").textContent;
+    var result = Babel.transform(source, {
+      presets: [["react", { runtime: "classic" }]],
+    });
+    var run = new Function("React", "ReactDOM", "XLSX", result.code);
+    run(React, ReactDOM, XLSX);
+  })();
+</script>
+</body>
+</html>
